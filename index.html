@@ -521,7 +521,7 @@
       <div class="field">
         <canvas id="heatfield"></canvas>
       </div>
-      <div class="field-caption">spatial embedding field // move to probe</div>
+      <div class="field-caption">forward pass // live network</div>
     </div>
   </div>
 </header>
@@ -761,76 +761,150 @@
 </footer>
 
 <script>
-// ---- Hero: spatial embedding field ----
+// ---- Hero: animated neural network / forward pass ----
 (function(){
   const canvas = document.getElementById('heatfield');
   if(!canvas) return;
   const ctx = canvas.getContext('2d');
-  let w,h,cols=14,rows=14,dots=[];
-  let pointer={x:0.5,y:0.5,active:false};
-  let t=0;
-
-  function resize(){
-    const rect = canvas.parentElement.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio||1,2);
-    w = canvas.width = rect.width*dpr;
-    h = canvas.height = rect.height*dpr;
-    canvas.style.width = rect.width+'px';
-    canvas.style.height = rect.height+'px';
-    ctx.setTransform(dpr,0,0,dpr,0,0);
-  }
-  resize();
-  window.addEventListener('resize',resize);
+  let rect, dpr;
+  let nodes=[], edges=[], pulses=[];
+  let t=0, lastSpawn=0;
 
   function getCSS(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim();}
-  const signal = getCSS('--signal') || '#4FD8C4';
-  const ember = getCSS('--ember') || '#FF8A5B';
-
-  canvas.addEventListener('mousemove',(e)=>{
-    const rect = canvas.getBoundingClientRect();
-    pointer.x = (e.clientX-rect.left)/rect.width;
-    pointer.y = (e.clientY-rect.top)/rect.height;
-    pointer.active = true;
-  });
-  canvas.addEventListener('mouseleave',()=>{pointer.active=false;});
-
   function hexToRgb(hex){
     hex = hex.replace('#','');
     const n = parseInt(hex,16);
     return [(n>>16)&255,(n>>8)&255,n&255];
   }
-  const sRGB = hexToRgb(signal);
-  const eRGB = hexToRgb(ember);
+  const sRGB = hexToRgb(getCSS('--signal') || '#4FD8C4');
+  const eRGB = hexToRgb(getCSS('--ember') || '#FF8A5B');
+  const borderRGB = hexToRgb('#223041');
+
+  const LAYERS = [4,6,6,3];
+
+  function build(){
+    rect = canvas.parentElement.getBoundingClientRect();
+    dpr = Math.min(window.devicePixelRatio||1,2);
+    canvas.width = rect.width*dpr;
+    canvas.height = rect.height*dpr;
+    canvas.style.width = rect.width+'px';
+    canvas.style.height = rect.height+'px';
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+
+    const padX = rect.width*0.1;
+    const padY = rect.height*0.12;
+    const usableW = rect.width - padX*2;
+    const usableH = rect.height - padY*2;
+
+    nodes = [];
+    LAYERS.forEach((count,li)=>{
+      const x = padX + (usableW * li/(LAYERS.length-1));
+      for(let i=0;i<count;i++){
+        const y = padY + (usableH * (i+0.5)/count);
+        nodes.push({layer:li, x, y, r: 3.6, pulse:0});
+      }
+    });
+
+    edges = [];
+    for(let li=0; li<LAYERS.length-1; li++){
+      const fromNodes = nodes.filter(n=>n.layer===li);
+      const toNodes = nodes.filter(n=>n.layer===li+1);
+      fromNodes.forEach(fn=>{
+        toNodes.forEach(tn=>{
+          edges.push({from:fn, to:tn, weight:(Math.random()*2-1)});
+        });
+      });
+    }
+    pulses = [];
+  }
+  build();
+  window.addEventListener('resize', build);
+
+  function spawnWave(){
+    // spawn a pulse on every edge leaving layer 0, staggered waves ripple forward via chained spawns
+    const startEdges = edges.filter(e=>e.from.layer===0);
+    startEdges.forEach(e=>{
+      pulses.push({edge:e, p:0, speed:0.016+Math.random()*0.008});
+    });
+  }
 
   function draw(){
-    t += 0.01;
-    const rect = canvas.getBoundingClientRect();
+    t += 1;
     ctx.clearRect(0,0,rect.width,rect.height);
 
-    const px = pointer.active ? pointer.x : 0.5+0.28*Math.sin(t*0.6);
-    const py = pointer.active ? pointer.y : 0.5+0.28*Math.cos(t*0.5);
+    // edges
+    edges.forEach(e=>{
+      const positive = e.weight>=0;
+      const c = positive ? sRGB : borderRGB;
+      const alpha = 0.08 + Math.abs(e.weight)*0.14;
+      ctx.strokeStyle = `rgba(${c[0]},${c[1]},${c[2]},${alpha})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(e.from.x, e.from.y);
+      ctx.lineTo(e.to.x, e.to.y);
+      ctx.stroke();
+    });
 
-    for(let i=0;i<cols;i++){
-      for(let j=0;j<rows;j++){
-        const nx = (i+0.5)/cols;
-        const ny = (j+0.5)/rows;
-        const dx = nx-px, dy = ny-py;
-        const dist = Math.sqrt(dx*dx+dy*dy);
-        const intensity = Math.max(0, 1 - dist*1.9);
-        const size = 1.2 + intensity*3.4;
-        const mix = intensity;
-        const r = sRGB[0]+(eRGB[0]-sRGB[0])*0;
-        const g = sRGB[1];
-        const b = sRGB[2];
-        const alpha = 0.12 + intensity*0.85;
-        ctx.beginPath();
-        ctx.fillStyle = `rgba(${sRGB[0]},${sRGB[1]},${sRGB[2]},${alpha})`;
-        ctx.arc(nx*rect.width, ny*rect.height, size, 0, Math.PI*2);
-        ctx.fill();
+    // pulses traveling along edges
+    for(let i=pulses.length-1; i>=0; i--){
+      const pu = pulses[i];
+      pu.p += pu.speed;
+      const e = pu.edge;
+      const x = e.from.x + (e.to.x-e.from.x)*pu.p;
+      const y = e.from.y + (e.to.y-e.from.y)*pu.p;
+
+      ctx.beginPath();
+      const grad = ctx.createRadialGradient(x,y,0,x,y,5);
+      grad.addColorStop(0, `rgba(${eRGB[0]},${eRGB[1]},${eRGB[2]},0.95)`);
+      grad.addColorStop(1, `rgba(${eRGB[0]},${eRGB[1]},${eRGB[2]},0)`);
+      ctx.fillStyle = grad;
+      ctx.arc(x,y,5,0,Math.PI*2);
+      ctx.fill();
+
+      if(pu.p>=1){
+        e.to.pulse = 1;
+        // chain forward to next layer's edges from this node
+        const nextEdges = edges.filter(ne=>ne.from===e.to);
+        nextEdges.forEach(ne=>{
+          pulses.push({edge:ne, p:0, speed:0.016+Math.random()*0.008});
+        });
+        pulses.splice(i,1);
       }
     }
+
+    // nodes
+    nodes.forEach(n=>{
+      const glow = n.pulse;
+      if(glow>0.01){
+        ctx.beginPath();
+        const grad = ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,10);
+        grad.addColorStop(0, `rgba(${sRGB[0]},${sRGB[1]},${sRGB[2]},${0.5*glow})`);
+        grad.addColorStop(1, `rgba(${sRGB[0]},${sRGB[1]},${sRGB[2]},0)`);
+        ctx.fillStyle = grad;
+        ctx.arc(n.x,n.y,10,0,Math.PI*2);
+        ctx.fill();
+        n.pulse *= 0.94;
+      }
+      ctx.beginPath();
+      const baseAlpha = 0.5 + glow*0.5;
+      ctx.fillStyle = `rgba(${sRGB[0]},${sRGB[1]},${sRGB[2]},${baseAlpha})`;
+      ctx.arc(n.x, n.y, n.r, 0, Math.PI*2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.strokeStyle = `rgba(${sRGB[0]},${sRGB[1]},${sRGB[2]},0.9)`;
+      ctx.lineWidth = 1;
+      ctx.arc(n.x, n.y, n.r+2, 0, Math.PI*2);
+      ctx.stroke();
+    });
+
+    if(t - lastSpawn > 90){
+      spawnWave();
+      lastSpawn = t;
+    }
+
     requestAnimationFrame(draw);
   }
+  spawnWave();
   draw();
 })();
 
